@@ -44,13 +44,14 @@ static inline intptr_t private__get_mem_space_with_metadata(intptr_t metadata) {
 /**
  * interpret this address as 'memory metadata' and initialize it
  */
-void private__init_mem_metadata(const intptr_t addr) {
+MemMetaData * private__init_mem_metadata(const intptr_t addr) {
     MemMetaData *meta = (MemMetaData *) addr;
     meta->MAGIC = MEM_METADATA_MAGIC;
     meta->next = NULL;
 
     meta->size = 0;
     meta->offset = 0;
+    return meta;
 }
 
 /**
@@ -58,6 +59,7 @@ void private__init_mem_metadata(const intptr_t addr) {
  * @note parameters of this function may not be aligned
  */
 static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
+    // fixme mem allocator
     // truncate or align address to 'page size'
     endAddr = ROUNDDOWN(endAddr, PAGE_SIZE);
     // startAddr is also the first-come metadata address
@@ -84,7 +86,7 @@ static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
  * 1. The parameter should be greater than the maximum size of slab which
  *    is 4096, in other words, the requested size should be greater than a page.
  * 2. This function shouldn't be invoked directly.
- * @param size the gross size that may including the metadate which controls the
+ * @param size the gross size that may including the metadata which controls the
  * following space.
  * @return the address of space truly using for containing;
  * @return return NULL, if there isn't available space anymore
@@ -96,9 +98,8 @@ static intptr_t private__mem_allocate(size_t size) {
     if (MemAllocator.free_list[order - MemAllocator.base_order]) {
         MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
         // assert(meta % PAGE_SIZE == 0);
-        // todo check
         intptr_t addr = (intptr_t) meta;
-        MemAllocator.mp[addr >> MemAllocator.base_order] = order;
+        MemAllocator.mp[addr >> MemAllocator.base_order] = order; // register
         return private__get_mem_space_with_metadata(addr);
     }
     // fitted space isn't available
@@ -109,21 +110,18 @@ static intptr_t private__mem_allocate(size_t size) {
             break;
         }
     }
-    if (available_order == -1) { // there is absolutly no space
+    if (available_order == -1) { // there is absolutely no space
         return (intptr_t) NULL;
     }
     for (int i = available_order; i > order; i--) {
         MemMetaData *meta = util_list_removeFirst(i - MemAllocator.base_order);
-        // todo check
         intptr_t addr = (intptr_t) meta;
         intptr_t newAddr = addr + (1 << (i - 1));
-        private__init_mem_metadata(newAddr);    // todo change return type
-        MemMetaData *newMeta = (MemMetaData *) newAddr;
+        MemMetaData *newMeta = private__init_mem_metadata(newAddr);
         util_list_addFirst(i - 1 - MemAllocator.base_order, newMeta);
         util_list_addFirst(i - 1 - MemAllocator.base_order, meta);
     }
     MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
-    // todo check
     intptr_t addr = (intptr_t) meta;
     MemAllocator.mp[addr >> MemAllocator.base_order] = order;
     return private__get_mem_space_with_metadata(addr);
@@ -143,7 +141,6 @@ intptr_t mem_allocate(size_t size) {
     size = align_size(size);
     // todo this can cause internal fraction
     intptr_t space = private__mem_allocate(size + sizeof(MemMetaData));
-    // todo check
     if (!space) return (intptr_t) NULL;
 
     intptr_t beginning = ROUNDUP(space, size);
