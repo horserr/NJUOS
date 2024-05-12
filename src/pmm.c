@@ -79,8 +79,8 @@ static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
     for (int i = 0; i < LENGTH(MemAllocator.free_list); i++) {
         MemAllocator.free_list[i] = NULL;
     }
-    for (int i = 0; i < LENGTH(MemAllocator.mp); i++) {
-        MemAllocator.mp[i] = 0;
+    for (int i = 0; i < LENGTH(MemAllocator.registry); i++) {
+        MemAllocator.registry[i] = 0;
     }
 
     MemAllocator.free_list[order - MemAllocator.base_order] = meta;
@@ -105,7 +105,7 @@ static intptr_t private__mem_allocate(size_t size) {
         MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
         // assert(meta % PAGE_SIZE == 0);
         intptr_t addr = (intptr_t) meta;
-        MemAllocator.mp[addr >> MemAllocator.base_order] = order; // register
+        MemAllocator.registry[addr >> MemAllocator.base_order] = order; // register
         return private__get_mem_space_with_metadata(addr);
     }
     // fitted space isn't available
@@ -119,6 +119,7 @@ static intptr_t private__mem_allocate(size_t size) {
     if (available_order == -1) { // there is absolutely no space
         return (intptr_t) NULL;
     }
+    // OPTIMIZE
     for (int i = available_order; i > order; i--) {
         MemMetaData *meta = util_list_removeFirst(i - MemAllocator.base_order);
         intptr_t addr = (intptr_t) meta;
@@ -129,7 +130,7 @@ static intptr_t private__mem_allocate(size_t size) {
     }
     MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
     intptr_t addr = (intptr_t) meta;
-    MemAllocator.mp[addr >> MemAllocator.base_order] = order;
+    MemAllocator.registry[addr >> MemAllocator.base_order] = order;
     return private__get_mem_space_with_metadata(addr);
 }
 
@@ -158,9 +159,9 @@ intptr_t mem_allocate(size_t size) {
 
 /**
  * @brief **private** function call of memory deallocate in aid of MemAllocator.
- * @note addr may not have been registered before, in this case, it is illegal.
- * Therefore, MemAllocator.mp as well as MAGIC should always be checked.
- * @param space according to `private__mem_allocate`, this parameter should be the
+ * @note address may not have been registered before, in this case, it is illegal.
+ * Therefore, MemAllocator.registry as well as MAGIC should always be checked.
+ * @param space in accordance with `private__mem_allocate`, this parameter should be the
  * address of space rather than metadata.
  * @return 0 if success; 1 if failed
  */
@@ -170,16 +171,15 @@ int private__mem_deallocate(intptr_t space) {
         return 1;
     }
     intptr_t addr = (intptr_t) meta;
-    int order = MemAllocator.mp[addr >> MemAllocator.base_order];
+    int order = MemAllocator.registry[addr >> MemAllocator.base_order];
     if (order < MemAllocator.base_order) {
         return 1;
     }
-    MemAllocator.mp[meta >> MemAllocator.base_order] = 0; // register off
+    MemAllocator.registry[addr >> MemAllocator.base_order] = 0; // register off
 
     // coalesce
-    // mind here: `order` and `meta` may change in the following code
-    const int copy_order = order;
-    for (int i = copy_order; i < MemAllocator.max_order; i++) {// merge from equal size to larger
+    // todo check max_order
+    while (order < MemAllocator.max_order) {
         intptr_t this_buddyAddr = (intptr_t) meta;
         int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
         intptr_t buddy_buddyAddr;
@@ -189,14 +189,21 @@ int private__mem_deallocate(intptr_t space) {
             buddy_buddyAddr = this_buddyAddr + (1 << order);
         }
 
-//        MemMetaData *buddy = util_list_retrieve_target_with_addr();
-        if (MemAllocator.free_list[i - MemAllocator.base_order]) {
-            // coalesce
+        MemMetaData *buddyMeta = util_list_retrieve_with_metaAddr(order - MemAllocator.base_order, buddy_buddyAddr);
+        if (!buddyMeta) break;
+        if (this_buddyNum) { // right
+            meta = buddyMeta;
         }
+        order++;
     }
+    util_list_addFirst(order - MemAllocator.base_order, meta);
+    return 0;
 }
 
-void mem_deallocate() {}
+// todo check magic and index
+void mem_deallocate() {
+
+}
 
 // todo max request memory is not allowed
 static void *kalloc(size_t size) {
@@ -307,8 +314,9 @@ static MemMetaData *util_list_removeFirst(int index) {
  * "MemAllocator's" free_list
  * @param index the target index of free_list
  * @param target_metaAddr the target address for **possible** metadata.
+ * @note other than giving back the address of target metadata, this function also remove the target
+ * metadata from free_list if it exits.
  * @warning index is different from order for MemAllocator.
- * @note to use this function, first check whether free_list[index] == NULL or not.
  * @return NULL, if not found; else the same address as `target_metaAddr`.
  */
 static MemMetaData *util_list_retrieve_with_metaAddr(int index, intptr_t target_metaAddr) {

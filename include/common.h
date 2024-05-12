@@ -80,7 +80,7 @@ struct memory_allocator {      // memory allocation is based on page
 
     // index -> page's address >> base_order, mp[index] -> actual order
     // and actual order is valid if `actual order` >= `base_order`
-    int mp[1 << 20]; // map -> registry
+    int registry[1 << 20]; // registry
 };
 
 /***** buffer manager **************/
