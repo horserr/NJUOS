@@ -71,12 +71,12 @@ typedef struct mem_metadata {
  * @brief all size relating to memory_allocator is gross size rather than net
  * size, which means the size of metadata should be acconted for.
  */
-struct memory_allocator {      // memory allcation is based on page
-    const int base_order = 12; // the order of 'page size'
-    int max_order = -1;
-    //  index -> order of size. (all of sizes are power of two).
+struct memory_allocator {      // memory allocation is based on page
+    int base_order; // the order of 'page size'
+    int max_order;
+    //  index -> order of size. (all sizes are power of two).
     //  free_list[actual_order - base_order] -> address
-    MemMetaData *free_list[1 + 32 - base_order];
+    MemMetaData *free_list[1 + 32 - 12];
 
     // index -> page's address >> base_order, mp[index] -> actual order
     // and actual order is valid if `actual order` >= `base_order`

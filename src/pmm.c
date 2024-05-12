@@ -25,13 +25,13 @@ static inline size_t align_size(size_t size);
 
 static void util_list_addFirst(int index, MemMetaData *target);
 
-static MemMetaData * util_list_removeFirst(int index);
+static MemMetaData *util_list_removeFirst(int index);
 
 /**
  * give the start of a space in memory, return the address of memory metadata
  */
-static inline MemMetaData * private__get_mem_metadata(intptr_t addr) {
-    return (MemMetaData*)(addr - (intptr_t) sizeof(MemMetaData));
+static inline MemMetaData *private__get_mem_metadata(intptr_t addr) {
+    return (MemMetaData *) (addr - (intptr_t) sizeof(MemMetaData));
 }
 
 /**
@@ -44,7 +44,7 @@ static inline intptr_t private__get_mem_space_with_metadata(intptr_t metadata) {
 /**
  * interpret this address as 'memory metadata' and initialize it
  */
-MemMetaData * private__init_mem_metadata(const intptr_t addr) {
+MemMetaData *private__init_mem_metadata(const intptr_t addr) {
     MemMetaData *meta = (MemMetaData *) addr;
     meta->MAGIC = MEM_METADATA_MAGIC;
     meta->next = NULL;
@@ -59,25 +59,26 @@ MemMetaData * private__init_mem_metadata(const intptr_t addr) {
  * @note parameters of this function may not be aligned
  */
 static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
-    // fixme mem allocator
+    MemAllocator.base_order = 12;
+
     // truncate or align address to 'page size'
     endAddr = ROUNDDOWN(endAddr, PAGE_SIZE);
     // startAddr is also the first-come metadata address
     startAddr = ROUNDUP(startAddr, PAGE_SIZE);
-    private__init_mem_metadata(startAddr);
+    MemMetaData *meta = private__init_mem_metadata(startAddr);
 
     // the margin between startAddr and endAddr may not be 'power of two'
     int order = get_order((size_t) (endAddr - startAddr));
     MemAllocator.max_order = order;
 
-    for (int i = 0; i < LENGTH(MemAllocator.free_list); i++) { // todo check
+    for (int i = 0; i < LENGTH(MemAllocator.free_list); i++) {
         MemAllocator.free_list[i] = NULL;
     }
     for (int i = 0; i < LENGTH(MemAllocator.mp); i++) {
         MemAllocator.mp[i] = 0;
     }
 
-    MemAllocator.free_list[order - MemAllocator.base_order] = startAddr;
+    MemAllocator.free_list[order - MemAllocator.base_order] = meta;
 }
 
 /**
@@ -132,7 +133,7 @@ static intptr_t private__mem_allocate(size_t size) {
  * middle layer between slab and actual 'memory allocator'
  * @note  the parameter should be greater than the maximum size of slab which is
  * 4096, in other words, the requested size should be greater than a page size.
- * @param size the net size, not including the metadate that controls the
+ * @param size the net size, not including the metadata that controls the
  * following space.
  * @return the address of requested space;
  * @return return NULL, if there isn't available space anymore
@@ -154,7 +155,7 @@ intptr_t mem_allocate(size_t size) {
  * @brief **private** function call of memory deallocate in aid of MemAllocator.
  * @note addr may not have been registered before, in this case, it is illegal.
  * Therefore, MemAllocator.mp as well as MAGIC should always be checked.
- * @param addr according to `private__mem_accloate`, this parameter should be the
+ * @param addr according to `private__mem_allocate`, this parameter should be the
  * beginning of space rather than metadata.
  * @return 0 if success; 1 if failed
  */
@@ -211,7 +212,7 @@ MODULE_DEF(pmm) = {
  */
 static inline int get_order(size_t size) {
     // counting_leading_zeros();
-    return ((int)sizeof(size_t) * 8 - 1) - __builtin_clz(size);
+    return ((int) sizeof(size_t) * 8 - 1) - __builtin_clz(size);
 }
 
 /**
@@ -263,7 +264,7 @@ static void util_list_addFirst(int index, MemMetaData *target) {
  * not
  * @return address of first element
  */
-static MemMetaData * util_list_removeFirst(int index) {
+static MemMetaData *util_list_removeFirst(int index) {
     // assert(MemAllocator.free_list[index]);
     MemMetaData *meta = MemAllocator.free_list[index]->next;
     MemMetaData *nextMeta = meta->next;
