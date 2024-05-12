@@ -59,7 +59,7 @@ typedef struct mem_metadata {
 /**
  * @ref
  * https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-2-deallocation/
- *
+ *     addr     space   beginning
  *     ********************************************
  *     *  meta 1*   space 1              *  meta 2*
  *     *  data  *                        *  data  *

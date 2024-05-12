@@ -23,9 +23,14 @@ static inline int get_order(size_t size);
 
 static inline size_t align_size(size_t size);
 
+static inline int calculate_buddyNum(intptr_t addr, int order);
+
 static void util_list_addFirst(int index, MemMetaData *target);
 
 static MemMetaData *util_list_removeFirst(int index);
+
+static MemMetaData *util_list_retrieve_with_metaAddr(int index, intptr_t target_metaAddr);
+
 
 /**
  * give the start of a space in memory, return the address of memory metadata
@@ -89,7 +94,7 @@ static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
  * 2. This function shouldn't be invoked directly.
  * @param size the gross size that may including the metadata which controls the
  * following space.
- * @return the address of space truly using for containing;
+ * @return the address of space truly used for containing;
  * @return return NULL, if there isn't available space anymore
  */
 static intptr_t private__mem_allocate(size_t size) {
@@ -155,22 +160,36 @@ intptr_t mem_allocate(size_t size) {
  * @brief **private** function call of memory deallocate in aid of MemAllocator.
  * @note addr may not have been registered before, in this case, it is illegal.
  * Therefore, MemAllocator.mp as well as MAGIC should always be checked.
- * @param addr according to `private__mem_allocate`, this parameter should be the
- * beginning of space rather than metadata.
+ * @param space according to `private__mem_allocate`, this parameter should be the
+ * address of space rather than metadata.
  * @return 0 if success; 1 if failed
  */
-int private__mem_deallocate(intptr_t addr) {
-    MemMetaData *meta = private__get_mem_metadata(addr);
+int private__mem_deallocate(intptr_t space) {
+    MemMetaData *meta = private__get_mem_metadata(space);
     if (meta->MAGIC != MEM_METADATA_MAGIC) {
         return 1;
     }
-    int order = MemAllocator.mp[meta >> MemAllocator.base_order];
+    intptr_t addr = (intptr_t) meta;
+    int order = MemAllocator.mp[addr >> MemAllocator.base_order];
     if (order < MemAllocator.base_order) {
         return 1;
     }
     MemAllocator.mp[meta >> MemAllocator.base_order] = 0; // register off
 
-    for (int i = order; i < MemAllocator.max_order; i++) {
+    // coalesce
+    // mind here: `order` and `meta` may change in the following code
+    const int copy_order = order;
+    for (int i = copy_order; i < MemAllocator.max_order; i++) {// merge from equal size to larger
+        intptr_t this_buddyAddr = (intptr_t) meta;
+        int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
+        intptr_t buddy_buddyAddr;
+        if (this_buddyNum) { // this is right buddy (higher addres) -> 1
+            buddy_buddyAddr = this_buddyAddr - (1 << order);
+        } else {// this is left buddy (lower address) -> 0
+            buddy_buddyAddr = this_buddyAddr + (1 << order);
+        }
+
+//        MemMetaData *buddy = util_list_retrieve_target_with_addr();
         if (MemAllocator.free_list[i - MemAllocator.base_order]) {
             // coalesce
         }
@@ -241,7 +260,17 @@ static inline size_t align_size(size_t size) {
     return size;
 }
 
-static inline int get_buddyNum(intptr_t addr, int order) {
+/**
+ * @brief Calculates the buddy number for a given address and order.
+ *
+ * The buddy system is a memory allocation strategy that divides memory into blocks of size 2^n.
+ * In this system, any given block has a "buddy" which is the adjacent block of the same size.
+ *
+ * @param addr The address for which the buddy number is to be calculated.
+ * @param order The order used to calculate the buddy number.
+ * @return 0 -> left buddy; 1 -> right buddy.
+ */
+static inline int calculate_buddyNum(intptr_t addr, int order) {
     return (int) (addr >> order) % 2;
 }
 
@@ -266,9 +295,37 @@ static void util_list_addFirst(int index, MemMetaData *target) {
  */
 static MemMetaData *util_list_removeFirst(int index) {
     // assert(MemAllocator.free_list[index]);
-    MemMetaData *meta = MemAllocator.free_list[index]->next;
+    MemMetaData *meta = MemAllocator.free_list[index];
     MemMetaData *nextMeta = meta->next;
     MemAllocator.free_list[index] = nextMeta;
     meta->next = NULL;
     return meta;
+}
+
+/**
+ * @brief designed for retrieving metadata using the given target address from
+ * "MemAllocator's" free_list
+ * @param index the target index of free_list
+ * @param target_metaAddr the target address for **possible** metadata.
+ * @warning index is different from order for MemAllocator.
+ * @note to use this function, first check whether free_list[index] == NULL or not.
+ * @return NULL, if not found; else the same address as `target_metaAddr`.
+ */
+static MemMetaData *util_list_retrieve_with_metaAddr(int index, intptr_t target_metaAddr) {
+    if (!MemAllocator.free_list[index])return NULL; // no element
+    if ((intptr_t) MemAllocator.free_list[index] == target_metaAddr) {
+        // the first element is target metadata
+        return util_list_removeFirst(index);
+    }
+    // has elements and the first is not the target element.
+    // find the predecessor that just before the target element.
+    MemMetaData *p = MemAllocator.free_list[index];
+    while (p->next && (intptr_t) p->next != target_metaAddr) p = p->next;
+    // reached the end and found nothing
+    if (!p->next)return NULL;
+
+    MemMetaData *targetMeta = (MemMetaData *) target_metaAddr;
+    p->next = targetMeta->next;
+    targetMeta->next = NULL;
+    return targetMeta;
 }
