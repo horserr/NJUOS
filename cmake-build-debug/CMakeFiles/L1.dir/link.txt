@@ -1,0 +1,1 @@
+/usr/bin/cc -g CMakeFiles/L1.dir/main.c.o CMakeFiles/L1.dir/src/pmm.c.o -o L1 

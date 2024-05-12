@@ -1,0 +1,3 @@
+/home/lyz/os/L1/cmake-build-debug/CMakeFiles/L1.dir
+/home/lyz/os/L1/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/lyz/os/L1/cmake-build-debug/CMakeFiles/rebuild_cache.dir
