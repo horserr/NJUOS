@@ -49,8 +49,7 @@ typedef struct buffer {
 typedef struct mem_metadata {
     // TODO
     size_t size;   // the actual size of storage
-    size_t offset; // relative to the beginning of page, represents the actual
-    // address for storing. And offset is always positive
+
     int MAGIC;
     struct mem_metadata *next;
 } MemMetaData;
@@ -59,13 +58,20 @@ typedef struct mem_metadata {
 /**
  * @ref
  * https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-2-deallocation/
- *     addr     space   beginning
- *     ********************************************
- *     *  meta 1*   space 1              *  meta 2*
- *     *  data  *                        *  data  *
- *     ********************************************
- *     +---------------------------------+            +-----+  represents power
- * of 2 partition beginning of current page
+ * this kind of model can cause internal fraction.
+ *     addr     space              beginning    addr
+ *     ***************************************************
+ *     *  meta 1*          |offset| space 1     *  meta 2*
+ *     *  data  *          |(int) |             *  data  *
+ *     ***************************************************
+ *     +----------------------------------------+
+ *
+ *  1. +-----+  represents power of 2 partition beginning of current page
+ *  2. offset means the margin between beginning and space.:
+ *          offset = beginning  - space;                   not take offset(size_t) into account
+ *     rather than:
+ *          offset = beginning - sizeof(size_t) - space;   take offset(size_t) into account
+ *
  */
 /**
  * @brief all size relating to memory_allocator is gross size rather than net

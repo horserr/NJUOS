@@ -55,7 +55,6 @@ MemMetaData *private__init_mem_metadata(const intptr_t addr) {
     meta->next = NULL;
 
     meta->size = 0;
-    meta->offset = 0;
     return meta;
 }
 
@@ -137,22 +136,26 @@ static intptr_t private__mem_allocate(size_t size) {
 /**
  * @brief **public** function call of memory allocate in aid of MemAllocator.
  * middle layer between slab and actual 'memory allocator'
- * @note  the parameter should be greater than the maximum size of slab which is
- * 4096, in other words, the requested size should be greater than a page size.
  * @param size the net size, not including the metadata that controls the
  * following space.
+ * @note  the parameter should be greater than the maximum size of slab which is
+ * 4096, in other words, the requested size should be greater than a page size.
  * @return the address of requested space;
  * @return return NULL, if there isn't available space anymore
+ * @see the physical storage model in "common.h"
  */
 intptr_t mem_allocate(size_t size) {
     size = align_size(size);
-    // todo this can cause internal fraction
-    intptr_t space = private__mem_allocate(size + sizeof(MemMetaData));
+    size_t *p_offset = NULL;
+    intptr_t space = private__mem_allocate(
+            size + sizeof(MemMetaData) + sizeof(*p_offset)); // sizeof(*p_offset) == sizeof(size_t)
     if (!space) return (intptr_t) NULL;
 
     intptr_t beginning = ROUNDUP(space, size);
+    p_offset = (size_t *) (beginning - sizeof(*p_offset));
+    *p_offset = beginning - space;
+
     MemMetaData *meta = private__get_mem_metadata(space);
-    meta->offset = beginning - space;
     meta->size = size;
     return beginning;
 }
@@ -178,7 +181,6 @@ int private__mem_deallocate(intptr_t space) {
     MemAllocator.registry[addr >> MemAllocator.base_order] = 0; // register off
 
     // coalesce
-    // todo check max_order
     while (order < MemAllocator.max_order) {
         intptr_t this_buddyAddr = (intptr_t) meta;
         int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
@@ -201,7 +203,8 @@ int private__mem_deallocate(intptr_t space) {
 }
 
 // todo check magic and index
-void mem_deallocate() {
+// another approach is to check MemAllocator.registry and look up
+void mem_deallocate(intptr_t beginning) {
 
 }
 
@@ -310,11 +313,11 @@ static MemMetaData *util_list_removeFirst(int index) {
 }
 
 /**
- * @brief designed for retrieving metadata using the given target address from
+ * @brief designed for retrieving metadata with the given target address from
  * "MemAllocator's" free_list
  * @param index the target index of free_list
  * @param target_metaAddr the target address for **possible** metadata.
- * @note other than giving back the address of target metadata, this function also remove the target
+ * @note other than giving back the address of target metadata, this function also removes the target
  * metadata from free_list if it exits.
  * @warning index is different from order for MemAllocator.
  * @return NULL, if not found; else the same address as `target_metaAddr`.
