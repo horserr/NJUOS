@@ -10,14 +10,17 @@
 #include <klib.h>
 #endif
 
-#define PAGE_SIZE (4 << 10)        // 4 KB     2^12
+const size_t PAGE_SIZE = 4 << 10;// 4 KB     2^12
 #define MAX_REQUEST_MEM (16 << 20) // 16 MB   2^24
 #define MEM_METADATA_MAGIC 1
 
-// todo calculate this
 #define SLAB_TYPES 6
 const int SLAB_CATEGORY[] = {8, 16, 32, 64, 128, 256};
-const int SLAB_INIT_PAGES[] = {5, 7, 7, 7, 6, 4};
+const int SLAB_INIT_PAGES_PER_TURN[] = {5, 8, 5, 4, 3, 3};
+// todo explain why
+const int SLAB_INIT_TURNS[] = {1, 1, 3, 3, 4, 2};
+//int SLAB_TOTAL_PAGES[] = {5, 8, 15, 12, 12, 6};
+// SLAB_TOTAL_PAGES[i] = SLAB_INIT_PAGES_PER_TURN[i] * SLAB_INIT_TURNS[i];
 
 typedef int SpinLock;
 // typedef union page {
@@ -80,10 +83,11 @@ struct memory_allocator {      // memory allocation is based on page
 };
 
 /***** SLAB ALLOCATION *************/
+
 // one bitmap keeps track of a single group, a group contains (sizeof(bitmap) * 8) members.
 typedef int16_t bitmap;     // 2B or 16 bits for a single bitmap
-typedef struct slab {
-    struct slab *next, *prev;
+typedef struct slab_metadata {
+    struct slab_metadata *next, *prev;
     /* fixed means the initial slab that can't be reused,
      while reusable means it can return to the memory */
     enum status {
@@ -94,16 +98,15 @@ typedef struct slab {
     unsigned int remaining; // how many cells are left
     int groups;
     bitmap *p_bitmap;   // point to the start of bitmap;
-    size_t offset;  // the distance between the beginning of slab and actual storage.
-    // offset = actual storage address - slab;
+    size_t offset;  // the distance between the beginning of slab_metadata and actual storage.
+    // offset = actual storage address - slab_metadata;
 
-} Slab;
+} SlabMetaData;
 
 /***** slab manager ****************/
 // every cpu has a single slab_manager
 struct slab_manager {
 //    SpinLock lock;
-    Slab slabs[SLAB_TYPES]; // regard slab as node in singly linked list,
+    SlabMetaData slabMetaDatas[SLAB_TYPES]; // regard slab as node in singly linked list,
     // this line of code servers as an array of sentinel node for each slab type.
-
 };
