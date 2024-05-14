@@ -10,14 +10,14 @@
 #include <klib.h>
 #endif
 
-#define PAGE_SIZE (4 * (1 << 10))        // 4 KB     2^12
-#define MAX_REQUEST_MEM (16 * (1 << 20)) // 16 MB   2^24
-#define SLAB_TYPES 9
+#define PAGE_SIZE (4 << 10)        // 4 KB     2^12
+#define MAX_REQUEST_MEM (16 << 20) // 16 MB   2^24
 #define MEM_METADATA_MAGIC 1
 
-typedef struct util_list {
-    struct util_list *next, *prev;
-} UtilList;
+// todo calculate this
+#define SLAB_TYPES 6
+const int SLAB_CATEGORY[] = {8, 16, 32, 64, 128, 256};
+const int SLAB_INIT_PAGES[] = {5, 7, 7, 7, 6, 4};
 
 typedef int SpinLock;
 // typedef union page {
@@ -36,28 +36,9 @@ typedef int SpinLock;
 //     uint8_t data[PAGE_SIZE];
 // } Page;
 
-typedef struct buffer {
-    int cpu;
-    SpinLock lock;
-    int free_num[SLAB_TYPES];
-    UtilList slab_list[SLAB_TYPES]; // the genuine space allocated
-    UtilList *freepage[SLAB_TYPES]; // the shortcut for find available space
-    // in slab_list
-} Buffer;
-
-/***** memory metadata ************/
-typedef struct mem_metadata {
-    // TODO
-    size_t size;   // the actual size of storage
-
-    int MAGIC;
-    struct mem_metadata *next;
-} MemMetaData;
-
-/***** memory allocator ************/
+/***** BUDDY ALLOCATION ***********/
 /**
- * @ref
- * https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-2-deallocation/
+ * physical memory partition model.
  * this kind of model can cause internal fraction.
  *     addr     space              beginning    addr
  *     ***************************************************
@@ -67,26 +48,62 @@ typedef struct mem_metadata {
  *     +----------------------------------------+
  *
  *  1. +-----+  represents power of 2 partition beginning of current page
- *  2. offset means the margin between beginning and space.:
+ *  2. offset means the distance between beginning and space:
  *          offset = beginning  - space;                   not take offset(size_t) into account
  *     rather than:
  *          offset = beginning - sizeof(size_t) - space;   take offset(size_t) into account
  *
  */
+/***** memory metadata ************/
+typedef struct mem_metadata {
+    // todo remove size
+    size_t size;   // the actual size of storage
+    int MAGIC;
+    struct mem_metadata *next;
+} MemMetaData;
+
+/***** memory allocator ************/
 /**
- * @brief all size relating to memory_allocator is gross size rather than net
- * size, which means the size of metadata should be acconted for.
+ * @note all size relating to memory_allocator is gross size rather than net
+ * size, which means that the size of metadata should be accounted for.
  */
 struct memory_allocator {      // memory allocation is based on page
     int base_order; // the order of 'page size'
     int max_order;
-    //  index -> order of size. (all sizes are power of two).
-    //  free_list[actual_order - base_order] -> address
+    //  index <- order of size - base_order. (all sizes are power of two).
+    //  free_list[index] -> address
     MemMetaData *free_list[1 + 32 - 12];
 
-    // index -> page's address >> base_order, mp[index] -> actual order
-    // and actual order is valid if `actual order` >= `base_order`
+    // index <- (page's address >> base_order)
+    // mp[index] -> actual order and actual order is valid if `actual order` >= `base_order`
     int registry[1 << 20]; // registry
 };
 
-/***** buffer manager **************/
+/***** SLAB ALLOCATION *************/
+// one bitmap keeps track of a single group, a group contains (sizeof(bitmap) * 8) members.
+typedef int16_t bitmap;     // 2B or 16 bits for a single bitmap
+typedef struct slab {
+    struct slab *next, *prev;
+    /* fixed means the initial slab that can't be reused,
+     while reusable means it can return to the memory */
+    enum status {
+        fixed, reusable
+    } status;
+    int type;  // such as 8,16...
+
+    unsigned int remaining; // how many cells are left
+    int groups;
+    bitmap *p_bitmap;   // point to the start of bitmap;
+    size_t offset;  // the distance between the beginning of slab and actual storage.
+    // offset = actual storage address - slab;
+
+} Slab;
+
+/***** slab manager ****************/
+// every cpu has a single slab_manager
+struct slab_manager {
+//    SpinLock lock;
+    Slab slabs[SLAB_TYPES]; // regard slab as node in singly linked list,
+    // this line of code servers as an array of sentinel node for each slab type.
+
+};

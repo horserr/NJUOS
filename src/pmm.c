@@ -9,15 +9,14 @@
 // the type of size of space is size_t
 // both of them are unsigned long int
 
-// todo pointer type
 // slab should ask for space in a row
 // free_list's order should minus base order
 // check magic
 // should initial metadata
-// todo clarify naming convention
+// the prior class has access to the metadata of inferior class
+// todo clarify naming conventions
 static struct memory_allocator MemAllocator;
 
-const int SLAB_CATEGORY[] = {1, 2, 4, 8, 16, 32, 64, 128, 4096};
 
 static inline int get_order(size_t size);
 
@@ -42,8 +41,8 @@ static inline MemMetaData *private__get_mem_metadata(intptr_t addr) {
 /**
  * give the address of memory metadata, return the address of space
  */
-static inline intptr_t private__get_mem_space_with_metadata(intptr_t metadata) {
-    return metadata + (intptr_t) sizeof(MemMetaData);
+static inline intptr_t private__get_mem_space_with_metaAddr(intptr_t metaAddr) {
+    return metaAddr + (intptr_t) sizeof(MemMetaData);
 }
 
 /**
@@ -87,25 +86,24 @@ static void private__init_mem_allocator(intptr_t startAddr, intptr_t endAddr) {
 
 /**
  * @brief **private** function call of memory allocate in aid of MemAllocator
- * @note
- * 1. The parameter should be greater than the maximum size of slab which
- *    is 4096, in other words, the requested size should be greater than a page.
- * 2. This function shouldn't be invoked directly.
- * @param size the gross size that may including the metadata which controls the
+ * @param size the gross size that includes the metadata which controls the
  * following space.
+ * @note
+ *  <li>  the requested size should be greater than a page.
+ *  <li> This function shouldn't be invoked directly.
  * @return the address of space truly used for containing;
  * @return return NULL, if there isn't available space anymore
+ * @link https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-1-allocation/ @endlink
  */
 static intptr_t private__mem_allocate(size_t size) {
     size = align_size(size);
     const int order = get_order(size);
-    // fitted space is available
-    if (MemAllocator.free_list[order - MemAllocator.base_order]) {
+
+    if (MemAllocator.free_list[order - MemAllocator.base_order]) {  // fitted space is available
         MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
-        // assert(meta % PAGE_SIZE == 0);
         intptr_t addr = (intptr_t) meta;
         MemAllocator.registry[addr >> MemAllocator.base_order] = order; // register
-        return private__get_mem_space_with_metadata(addr);
+        return private__get_mem_space_with_metaAddr(addr);
     }
     // fitted space isn't available
     int available_order = -1;
@@ -118,7 +116,6 @@ static intptr_t private__mem_allocate(size_t size) {
     if (available_order == -1) { // there is absolutely no space
         return (intptr_t) NULL;
     }
-    // OPTIMIZE
     for (int i = available_order; i > order; i--) {
         MemMetaData *meta = util_list_removeFirst(i - MemAllocator.base_order);
         intptr_t addr = (intptr_t) meta;
@@ -130,12 +127,12 @@ static intptr_t private__mem_allocate(size_t size) {
     MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
     intptr_t addr = (intptr_t) meta;
     MemAllocator.registry[addr >> MemAllocator.base_order] = order;
-    return private__get_mem_space_with_metadata(addr);
+    return private__get_mem_space_with_metaAddr(addr);
 }
 
 /**
  * @brief **public** function call of memory allocate in aid of MemAllocator.
- * middle layer between slab and actual 'memory allocator'
+ * Middle layer between slab and actual 'memory allocator'
  * @param size the net size, not including the metadata that controls the
  * following space.
  * @note  the parameter should be greater than the maximum size of slab which is
@@ -167,6 +164,7 @@ intptr_t mem_allocate(size_t size) {
  * @param space in accordance with `private__mem_allocate`, this parameter should be the
  * address of space rather than metadata.
  * @return 0 if success; 1 if failed
+ * @link https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-2-deallocation/ @endlink
  */
 int private__mem_deallocate(intptr_t space) {
     MemMetaData *meta = private__get_mem_metadata(space);
@@ -185,7 +183,7 @@ int private__mem_deallocate(intptr_t space) {
         intptr_t this_buddyAddr = (intptr_t) meta;
         int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
         intptr_t buddy_buddyAddr;
-        if (this_buddyNum) { // this is right buddy (higher addres) -> 1
+        if (this_buddyNum) { // this is right buddy (higher address) -> 1
             buddy_buddyAddr = this_buddyAddr - (1 << order);
         } else {// this is left buddy (lower address) -> 0
             buddy_buddyAddr = this_buddyAddr + (1 << order);
@@ -202,11 +200,24 @@ int private__mem_deallocate(intptr_t space) {
     return 0;
 }
 
-// todo check magic and index
-// another approach is to check MemAllocator.registry and look up
-void mem_deallocate(intptr_t beginning) {
+/**
+ * @brief **public** function call of memory deallocate in aid of MemAllocator.
+ * use offset ahead of beginning to calculate address of space and simply pass it to private deallocate function.
+ * @param beginning in accordance with `mem_allocate`, this parameter should be the
+ * beginning of actual storage rather than metadata or space.
+ * @return 0 if success; 1 if failed
+ */
+int mem_deallocate(intptr_t beginning) {
+    size_t *p_offset = (size_t *) (beginning - sizeof(size_t));
+    intptr_t space = (intptr_t) (beginning - *p_offset);
+    return private__mem_deallocate(space);
+}
+
+void private__init_slab_manager() {
+    // todo
 
 }
+
 
 // todo max request memory is not allowed
 static void *kalloc(size_t size) {
@@ -235,9 +246,8 @@ MODULE_DEF(pmm) = {
 
 /***** utility function ************/
 /**
- * @brief this function is designed for 'memory allocator', which calcualtes the
- * order of power of 2 size. And 2^order is less than or equal to the given
- * size.
+ * this function is designed for 'memory allocator', which calculates the order of power of 2 size.
+ * And 2^order is less than or equal to the given size.
  */
 static inline int get_order(size_t size) {
     // counting_leading_zeros();
