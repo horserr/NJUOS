@@ -215,25 +215,116 @@ int mem_deallocate(uintptr_t beginning) {
     return private__mem_deallocate(space);
 }
 
+/**
+ * Each slab is divided into multiple 'cells', where each cell is intended to
+ * store a single instance of the object type that the slab manages.
+ * The size of each cell is determined by the `typeSize` attribute.
+ *
+ * Every time, this function is invoked, it first requests memory from the global
+ * memory allocator which delivers a fit space. After setting up some attributes
+ * of `struct slab_metadata`, it calculates how many bitmap is suitable.
+ * some useful equations are listed below:
+ * - groups = number of bitmaps
+ * - members per group = sizeof(bitmap) * 8
+ * - capacity = (member per group) * groups
+ * because bitmaps and cells share space with each other, they must obey the rules:
+ * - capacity <= number of cells.
+ * This is because one group that bitmap represents is integrated and non-splittable.
+ * This may cause some waste, but for convenience, such is tolerable.
+ * Besides, in calculation, address alignment should always bear in mind.
+ *
+ * What's more, if status is `init`, place the new metadata at the front of 'deque';
+ * else if status is `reusable`, place it at the rear.
+ * The reason for this is that those reusable spaces can be retrieved back to
+ * the global memory allocator, while initial space is fixed.
+ *
+ * @return 0, if succeed; 1, failed.
+ */
+int slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
+    SlabMetaData *newMeta = (SlabMetaData *) mem_allocate(size);
+    if (!newMeta) { // newMeta is NULL
+        return 1;
+    }
+    newMeta->status = status;
+    newMeta->typeSize = sentinel->typeSize;
 
+    uintptr_t start = (uintptr_t) (newMeta + sizeof(SlabMetaData));
+    start = ROUNDUP(start, sizeof(bitmap));
+    newMeta->p_bitmap = (bitmap *) start;
+
+    const uintptr_t end = (uintptr_t) (newMeta + size);
+    int max_cell_num = (int) ((end - start) / newMeta->typeSize);
+    // dynamically partition bitmaps and cells.
+    int groups = 1;
+    for (int i = max_cell_num; i > 0; --i) {
+        uintptr_t space = end - i * newMeta->typeSize; // the beginning of cell
+        groups = (int) ((space - start) / sizeof(bitmap));
+        int capacity = groups * (int) (sizeof(bitmap) * 8);
+
+        if (capacity > i) break;
+    }
+    // if newMeta->groups == 0, it means this slab is invalid
+    newMeta->groups = groups - 1;   // guarantee capacity <= number of cells
+    newMeta->remaining = newMeta->groups * (sizeof(bitmap) * 8);
+    newMeta->offset = end - newMeta->remaining * newMeta->typeSize - (uintptr_t) newMeta;
+
+    if (status == INITIAL) {
+        newMeta->prev = sentinel;
+        newMeta->next = sentinel->next;
+        sentinel->next->prev = newMeta;
+        sentinel->next = newMeta;
+    } else if (status == REUSABLE) {
+        newMeta->next = sentinel;
+        newMeta->prev = sentinel->prev;
+        sentinel->prev->next = newMeta;
+        sentinel->prev = newMeta;
+    }
+    return 0;
+}
+
+/**
+ * @brief Initializes the metadata for a SlabManager.
+ *
+ * This function sets up the initial state for managing slabs of different sizes
+ * by creating sentinel nodes for each slab type. These sentinel nodes serve
+ * as the heads of circular doubly linked lists, organizing the metadata for
+ * slabs of each type. It then allocates initial memory blocks for these slabs
+ * from the global memory allocator, setting the stage for efficient memory management.
+ */
 void private__init_slab_meta_data(SlabMetaData *metaData, int typeIndex) {
-    // tackle the first
-    mem_allocate(SLAB_INIT_PAGES_PER_TURN[typeIndex] * PAGE_SIZE);
+    // create sentinel first
+    metaData->next = metaData->prev = metaData;
+    metaData->status = SENTINEL;
+    metaData->typeSize = SLAB_CATEGORY[typeIndex];
 
-    for (int i = 1; i < SLAB_INIT_TURNS[typeIndex]; ++i) {
+    for (int i = 0; i < SLAB_INIT_TURNS[typeIndex]; ++i) {
+        slab_request_mem(metaData, INITIAL,
+                         SLAB_INIT_PAGES_PER_TURN[typeIndex] * PAGE_SIZE); // mind here
     }
 }
 
+/**
+ * @brief Initializes a single slab manager.
+ *
+ * The slab manager is responsible for managing a specific set of slabs,
+ * each corresponding to a different object size.
+ * @param addr The memory address where the slab manager is to be initialized.
+ * This address is expected to be properly aligned and allocated prior to calling this function.
+ */
 void private__init_slab_manager(uintptr_t addr) {
     struct slab_manager *manager = (struct slab_manager *) addr;
     for (int i = 0; i < SLAB_TYPES; ++i) {
         private__init_slab_meta_data(&manager->slabMetaDatas[i], i);
     }
+    // todo init lock
 }
 
 /**
- * initialize the array of slab_manager, aka. `SlabManagers`.
- * @note
+ * @brief initialize the array of slab_manager, aka. `SlabManagers`.
+ *
+ * this function uses physical memory to make room for each SlabManager.
+ * @param p_startAddr the pointer to the start address
+ * @note the start address of the available space is changed after this function call.
  */
 void private__init_slab_managers(uintptr_t *p_startAddr) {
     uintptr_t start = ROUNDUP(*p_startAddr, sizeof(struct slab_manager));

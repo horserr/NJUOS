@@ -10,8 +10,8 @@
 #include <klib.h>
 #endif
 
-const size_t PAGE_SIZE = 4 << 10;// 4 KB     2^12
-#define MAX_REQUEST_MEM (16 << 20) // 16 MB   2^24
+const size_t PAGE_SIZE = 4 << 10; // 4 KB     2^12
+const size_t MAX_REQUEST_MEM = 16 << 20; // 16 MB   2^24
 #define MEM_METADATA_MAGIC 1
 
 #define SLAB_TYPES 6
@@ -86,15 +86,21 @@ struct memory_allocator {      // memory allocation is based on page
 
 // one bitmap keeps track of a single group, a group contains (sizeof(bitmap) * 8) members.
 typedef int16_t bitmap;     // 2B or 16 bits for a single bitmap
+typedef enum status {
+    SENTINEL, INITIAL, REUSABLE
+} Status;
 typedef struct slab_metadata {
+    // circular doubly linked list, acting as a deque
     struct slab_metadata *next, *prev;
-    /* fixed means the initial slab that can't be reused,
+    // todo add magic
+    int MAGIC;
+    /* sentinel is designed for slab_manager individually
+     fixed means the initial slab that can't be reused,
      while reusable means it can return to the memory */
-    enum status {
-        fixed, reusable
-    } status;
-    int type;  // such as 8,16...
+    Status status;
+    int typeSize;  // such as 8,16...
 
+    // below are unnecessary for sentinel
     unsigned int remaining; // how many cells are left
     int groups;
     bitmap *p_bitmap;   // point to the start of bitmap;
