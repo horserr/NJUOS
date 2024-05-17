@@ -27,11 +27,19 @@ static inline size_t align_size(size_t size);
 
 static inline int calculate_buddyNum(uintptr_t addr, int order);
 
+int get_slab_typeIndex(size_t size);
+
 static void util_list_addFirst(int index, MemMetaData *target);
 
 static MemMetaData *util_list_removeFirst(int index);
 
 static MemMetaData *util_list_retrieve_with_metaAddr(int index, uintptr_t target_metaAddr);
+
+static inline int util_bitmap_has_space(bitmap b);
+
+static inline int util_bitmap_get_available_pos(bitmap b);
+
+static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos);
 
 
 /**
@@ -88,7 +96,7 @@ static void private__init_mem_allocator(uintptr_t startAddr, uintptr_t endAddr) 
 }
 
 /**
- * @brief **private** function call of memory allocate in aid of MemAllocator
+ * @brief **private** function call of memory allocation in aid of MemAllocator
  * @param size the gross size that includes the metadata which controls the
  * following space.
  * @note
@@ -134,7 +142,7 @@ static uintptr_t private__mem_allocate(size_t size) {
 }
 
 /**
- * @brief **public** function call of memory allocate in aid of MemAllocator.
+ * @brief **public** function call of memory allocation in aid of MemAllocator.
  * Middle layer between slab and actual 'memory allocator'
  * @param size the net size, not including the metadata that controls the
  * following space.
@@ -344,42 +352,11 @@ void private__init_slab_managers(uintptr_t *p_startAddr) {
 }
 
 /**
- * @return the index of fit(the first greater than or equal) slab size in `SLAB_CATEGORY`,
- * if find; else -1.
+ * @brief **private** function call of slab allocation in aid of the dedicated slab manager.
+ * @return addr of allocated space either by using the current slab storage or request from
+ * MemAllocator; NULL if not available in current slab storage AND MemAllocator denies the
+ * request.
  */
-int get_slab_typeIndex(size_t size) {
-    for (int i = 0; i < SLAB_TYPES; ++i) {
-        if (SLAB_CATEGORY[i] >= size) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static inline int util_bitmap_has_space(bitmap b) {
-    return (~b) ? 1 : 0;
-}
-
-/**
- * fetch the index of available space(bit 0) in bitmap from lower to higher.
- * @return the index of first zero bit in bitmap.
- * @pre if `_bitmap_has_space(b)` is true, then this function can be called.
- * Otherwise, it is forbidden.
- */
-static inline int util_bitmap_get_available_pos(bitmap b) {
-    // count trailing zeros
-    return __builtin_ctz(~b);
-}
-
-/**
- * This function toggles the bit at the given position, changing it from 0 to 1
- * or from 1 to 0.
- * @param pos the index of to be flipped bit.
- */
-static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos) {
-    *p_bitmap ^= (1 << pos);
-}
-
 uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
     SlabMetaData *p = sentinel->next;
     while (p != sentinel) {
@@ -408,7 +385,10 @@ uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
 }
 
 /**
- * @return
+ * @brief **public** function call of slab allocation in aid of the dedicated slab manager.
+ * @param typeIndex which type needs.
+ * @return same as `__slab_allocate`.
+ * @see private__slab_allocate for more details.
  */
 uintptr_t slab_allocate(struct slab_manager *manager, int typeIndex) {
     return private__slab_allocate(&manager->slabMetaDatas[typeIndex]);
@@ -418,14 +398,18 @@ static void *kalloc(size_t size) {
     if (size > MAX_REQUEST_MEM) {
         return NULL;
     }
+    void *ret = NULL;
     int typeIndex = get_slab_typeIndex(size);
     if (typeIndex) {// suitable for slab
         int cpu = cpu_current();
-        slab_allocate(&SlabManagers[cpu], typeIndex);
-
-    } else {
-
+        ret = (void *) slab_allocate(&SlabManagers[cpu], typeIndex);
+    } else {// too big for slab
+        /* adjust the size to bigger or equal to PAGE_SIZE to fit in with `mem_allocate`.
+         Admittedly, this is a kind of waste if SLAB_CATEGORY[-1] < size < PAGE_SIZE */
+        size = size >= PAGE_SIZE ? size : PAGE_SIZE;
+        ret = (void *) mem_allocate(size);
     }
+    return ret;
 }
 
 static void kfree(void *ptr) {
@@ -501,6 +485,19 @@ static inline int calculate_buddyNum(uintptr_t addr, int order) {
 }
 
 /**
+ * @return the index of fit(the first greater than or equal) slab size in `SLAB_CATEGORY`,
+ * if find; else -1.
+ */
+int get_slab_typeIndex(size_t size) {
+    for (int i = 0; i < SLAB_TYPES; ++i) {
+        if (SLAB_CATEGORY[i] >= size) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
  * @brief designed for adding metadata to "MemAllocator's" free_list
  * @param index the target index of free_list
  * @warning index is different from order for MemAllocator.
@@ -555,4 +552,28 @@ static MemMetaData *util_list_retrieve_with_metaAddr(int index, uintptr_t target
     p->next = targetMeta->next;
     targetMeta->next = NULL;
     return targetMeta;
+}
+
+static inline int util_bitmap_has_space(bitmap b) {
+    return (~b) ? 1 : 0;
+}
+
+/**
+ * fetch the index of available space(bit 0) in bitmap from lower to higher.
+ * @return the index of first zero bit in bitmap.
+ * @pre if `_bitmap_has_space(b)` is true, then this function can be called.
+ * Otherwise, it is forbidden.
+ */
+static inline int util_bitmap_get_available_pos(bitmap b) {
+    // count trailing zeros
+    return __builtin_ctz(~b);
+}
+
+/**
+ * This function toggles the bit at the given position, changing it from 0 to 1
+ * or from 1 to 0.
+ * @param pos the index of to be flipped bit.
+ */
+static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos) {
+    *p_bitmap ^= (1 << pos);
 }
