@@ -14,6 +14,7 @@
 // check magic
 // should initial metadata
 // the prior class has access to the metadata of inferior class
+// todo change some @note to @pre
 // todo clarify naming conventions
 static struct memory_allocator MemAllocator;
 
@@ -219,7 +220,7 @@ int mem_deallocate(uintptr_t beginning) {
  * Each slab is divided into multiple 'cells', where each cell is intended to
  * store a single instance of the object type that the slab manages.
  * The size of each cell is determined by the `typeSize` attribute.
- *
+ * <p>
  * Every time, this function is invoked, it first requests memory from the global
  * memory allocator which delivers a fit space. After setting up some attributes
  * of `struct slab_metadata`, it calculates how many bitmap is suitable.
@@ -227,23 +228,25 @@ int mem_deallocate(uintptr_t beginning) {
  * - groups = number of bitmaps
  * - members per group = sizeof(bitmap) * 8
  * - capacity = (member per group) * groups
- * because bitmaps and cells share space with each other, they must obey the rules:
+ * because bitmaps and cells share common space with each other, they must obey the rule:
  * - capacity <= number of cells.
  * This is because one group that bitmap represents is integrated and non-splittable.
- * This may cause some waste, but for convenience, such is tolerable.
+ * This may entail some waste, but for convenience, such approach is tolerable.
  * Besides, in calculation, address alignment should always bear in mind.
- *
+ * <p>
  * What's more, if status is `init`, place the new metadata at the front of 'deque';
  * else if status is `reusable`, place it at the rear.
  * The reason for this is that those reusable spaces can be retrieved back to
  * the global memory allocator, while initial space is fixed.
  *
- * @return 0, if succeed; 1, failed.
+ * @param size the total size request from `MemAllocator`
+ * @note size must be multiple times of PAGE_SIZE.
+ * @return the pointer to newMeta, if succeed; else, NULL.
  */
-int slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
+SlabMetaData *slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
     SlabMetaData *newMeta = (SlabMetaData *) mem_allocate(size);
     if (!newMeta) { // newMeta is NULL
-        return 1;
+        return NULL;
     }
     newMeta->status = status;
     newMeta->typeSize = sentinel->typeSize;
@@ -266,7 +269,11 @@ int slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
     // if newMeta->groups == 0, it means this slab is invalid
     newMeta->groups = groups - 1;   // guarantee capacity <= number of cells
     newMeta->remaining = newMeta->groups * (sizeof(bitmap) * 8);
-    newMeta->offset = end - newMeta->remaining * newMeta->typeSize - (uintptr_t) newMeta;
+    newMeta->offset = (end - newMeta->remaining * newMeta->typeSize) - (uintptr_t) newMeta;
+    // initialize bitmaps
+    for (int i = 0; i < newMeta->groups; ++i) {
+        newMeta->p_bitmap[i] = 0;
+    }
 
     if (status == INITIAL) {
         newMeta->prev = sentinel;
@@ -279,7 +286,7 @@ int slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
         sentinel->prev->next = newMeta;
         sentinel->prev = newMeta;
     }
-    return 0;
+    return newMeta;
 }
 
 /**
@@ -309,7 +316,7 @@ void private__init_slab_meta_data(SlabMetaData *metaData, int typeIndex) {
  * The slab manager is responsible for managing a specific set of slabs,
  * each corresponding to a different object size.
  * @param addr The memory address where the slab manager is to be initialized.
- * This address is expected to be properly aligned and allocated prior to calling this function.
+ * @pre This address is expected to be properly aligned and allocated.
  */
 void private__init_slab_manager(uintptr_t addr) {
     struct slab_manager *manager = (struct slab_manager *) addr;
@@ -336,13 +343,89 @@ void private__init_slab_managers(uintptr_t *p_startAddr) {
     *p_startAddr = start;
 }
 
+/**
+ * @return the index of fit(the first greater than or equal) slab size in `SLAB_CATEGORY`,
+ * if find; else -1.
+ */
+int get_slab_typeIndex(size_t size) {
+    for (int i = 0; i < SLAB_TYPES; ++i) {
+        if (SLAB_CATEGORY[i] >= size) {
+            return i;
+        }
+    }
+    return -1;
+}
 
-// todo max request memory is not allowed
+static inline int util_bitmap_has_space(bitmap b) {
+    return (~b) ? 1 : 0;
+}
+
+/**
+ * fetch the index of available space(bit 0) in bitmap from lower to higher.
+ * @return the index of first zero bit in bitmap.
+ * @pre if `_bitmap_has_space(b)` is true, then this function can be called.
+ * Otherwise, it is forbidden.
+ */
+static inline int util_bitmap_get_available_pos(bitmap b) {
+    // count trailing zeros
+    return __builtin_ctz(~b);
+}
+
+/**
+ * This function toggles the bit at the given position, changing it from 0 to 1
+ * or from 1 to 0.
+ * @param pos the index of to be flipped bit.
+ */
+static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos) {
+    *p_bitmap ^= (1 << pos);
+}
+
+uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
+    SlabMetaData *p = sentinel->next;
+    while (p != sentinel) {
+        if (p->remaining) {
+            for (int g = 0; g < p->groups; ++g) {
+                if (!util_bitmap_has_space(p->p_bitmap[g]))continue;
+
+                int pos = util_bitmap_get_available_pos(p->p_bitmap[g]);
+                util_bitmap_flip_pos(&p->p_bitmap[g], pos);
+                p->remaining--;
+
+                return (uintptr_t) p + p->offset +
+                       (g * (sizeof(bitmap) * 8) + pos) * p->typeSize;
+            }
+        }
+        p = p->next;
+    }
+    // no available space in current list of slabs, request a page once.
+    SlabMetaData *newMeta = slab_request_mem(sentinel, REUSABLE, PAGE_SIZE);
+    if (!newMeta) {  // newMeta is NULL
+        return (uintptr_t) NULL;
+    }
+    newMeta->remaining--;
+    util_bitmap_flip_pos(newMeta->p_bitmap, 0);
+    return (uintptr_t) newMeta + newMeta->offset;
+}
+
+/**
+ * @return
+ */
+uintptr_t slab_allocate(struct slab_manager *manager, int typeIndex) {
+    return private__slab_allocate(&manager->slabMetaDatas[typeIndex]);
+}
+
 static void *kalloc(size_t size) {
-    // TODO
-    // You can add more .c files to the repo.
+    if (size > MAX_REQUEST_MEM) {
+        return NULL;
+    }
+    int typeIndex = get_slab_typeIndex(size);
+    if (typeIndex) {// suitable for slab
+        int cpu = cpu_current();
+        slab_allocate(&SlabManagers[cpu], typeIndex);
 
-    return NULL;
+    } else {
+
+    }
 }
 
 static void kfree(void *ptr) {
@@ -373,7 +456,7 @@ MODULE_DEF(pmm) = {
  * And 2^order is less than or equal to the given size.
  */
 static inline int get_order(size_t size) {
-    // counting_leading_zeros();
+    // counting leading zeros;
     return ((int) sizeof(size_t) * 8 - 1) - __builtin_clz(size);
 }
 
