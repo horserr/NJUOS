@@ -12,7 +12,8 @@
 
 const size_t PAGE_SIZE = 4 << 10; // 4 KB     2^12
 const size_t MAX_REQUEST_MEM = 16 << 20; // 16 MB   2^24
-#define MEM_METADATA_MAGIC 1
+const int MEM_METADATA_MAGIC = 0x01010101;
+const int SLAB_METADATA_MAGIC = 0x10101010;
 
 #define SLAB_TYPES 5
 // todo explain why remove 256
@@ -103,7 +104,7 @@ typedef struct slab_metadata {
     int typeSize;  // such as 8,16...
 
     // below are unnecessary for sentinel
-    unsigned int remaining; // how many cells are left
+    int remaining; // how many cells are left
     int groups;
     bitmap *p_bitmap;   // point to the start of bitmap;
     size_t offset;  // the distance between the beginning of slab_metadata and actual storage.

@@ -16,18 +16,17 @@
 // the prior class has access to the metadata of inferior class
 // todo change some @note to @pre
 // todo clarify naming conventions
+// todo check this(every) function's return cases.
 static struct memory_allocator MemAllocator;
 
-struct slab_manager *SlabManagers;// the pointer to an array of slab managers
+struct slab_manager *SlabManagers; // the pointer to an array of slab managers
 
 
-static inline int get_order(size_t size);
+static int get_order(size_t size);
 
-static inline size_t align_size(size_t size);
+static size_t align_size(size_t size);
 
-static inline int calculate_buddyNum(uintptr_t addr, int order);
-
-int get_slab_typeIndex(size_t size);
+static int calculate_buddyNum(uintptr_t addr, int order);
 
 static void util_list_addFirst(int index, MemMetaData *target);
 
@@ -35,24 +34,24 @@ static MemMetaData *util_list_removeFirst(int index);
 
 static MemMetaData *util_list_retrieve_with_metaAddr(int index, uintptr_t target_metaAddr);
 
-static inline int util_bitmap_has_space(bitmap b);
+static int util_bitmap_has_space(bitmap b);
 
-static inline int util_bitmap_get_available_pos(bitmap b);
+static int util_bitmap_get_available_pos(bitmap b);
 
-static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos);
+static void util_bitmap_flip_pos(bitmap *p_bitmap, int pos);
 
 
 /**
  * give the start of a space in memory, return the address of memory metadata
  */
-static inline MemMetaData *private__get_mem_metadata(uintptr_t addr) {
+static MemMetaData *private__mem_get_metadata(const uintptr_t addr) {
     return (MemMetaData *) (addr - (uintptr_t) sizeof(MemMetaData));
 }
 
 /**
  * give the address of memory metadata, return the address of space
  */
-static inline uintptr_t private__get_mem_space_with_metaAddr(uintptr_t metaAddr) {
+static uintptr_t private__mem_get_space_with_metaAddr(const uintptr_t metaAddr) {
     return metaAddr + (uintptr_t) sizeof(MemMetaData);
 }
 
@@ -82,7 +81,7 @@ static void private__init_mem_allocator(uintptr_t startAddr, uintptr_t endAddr) 
     MemMetaData *meta = private__init_mem_metadata(startAddr);
 
     // the margin between startAddr and endAddr may not be 'power of two'
-    int order = get_order((size_t) (endAddr - startAddr));
+    const int order = get_order((size_t) (endAddr - startAddr));
     MemAllocator.max_order = order;
 
     for (int i = 0; i < LENGTH(MemAllocator.free_list); i++) {
@@ -110,11 +109,12 @@ static uintptr_t private__mem_allocate(size_t size) {
     size = align_size(size);
     const int order = get_order(size);
 
-    if (MemAllocator.free_list[order - MemAllocator.base_order]) {  // fitted space is available
+    if (MemAllocator.free_list[order - MemAllocator.base_order]) {
+        // fitted space is available
         MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
-        uintptr_t addr = (uintptr_t) meta;
+        const uintptr_t addr = (uintptr_t) meta;
         MemAllocator.registry[addr >> MemAllocator.base_order] = order; // register
-        return private__get_mem_space_with_metaAddr(addr);
+        return private__mem_get_space_with_metaAddr(addr);
     }
     // fitted space isn't available
     int available_order = -1;
@@ -124,21 +124,22 @@ static uintptr_t private__mem_allocate(size_t size) {
             break;
         }
     }
-    if (available_order == -1) { // there is absolutely no space
+    if (available_order == -1) {
+        // there is absolutely no space
         return (uintptr_t) NULL;
     }
     for (int i = available_order; i > order; i--) {
         MemMetaData *meta = util_list_removeFirst(i - MemAllocator.base_order);
-        uintptr_t addr = (uintptr_t) meta;
-        uintptr_t newAddr = addr + (1 << (i - 1));
+        const uintptr_t addr = (uintptr_t) meta;
+        const uintptr_t newAddr = addr + (1 << (i - 1));
         MemMetaData *newMeta = private__init_mem_metadata(newAddr);
         util_list_addFirst(i - 1 - MemAllocator.base_order, newMeta);
         util_list_addFirst(i - 1 - MemAllocator.base_order, meta);
     }
     MemMetaData *meta = util_list_removeFirst(order - MemAllocator.base_order);
-    uintptr_t addr = (uintptr_t) meta;
+    const uintptr_t addr = (uintptr_t) meta;
     MemAllocator.registry[addr >> MemAllocator.base_order] = order;
-    return private__get_mem_space_with_metaAddr(addr);
+    return private__mem_get_space_with_metaAddr(addr);
 }
 
 /**
@@ -155,15 +156,15 @@ static uintptr_t private__mem_allocate(size_t size) {
 uintptr_t mem_allocate(size_t size) {
     size = align_size(size);
     size_t *p_offset = NULL;
-    uintptr_t space = private__mem_allocate(
-            size + sizeof(MemMetaData) + sizeof(*p_offset)); // sizeof(*p_offset) == sizeof(size_t)
+    const uintptr_t space = private__mem_allocate(
+        size + sizeof(MemMetaData) + sizeof(*p_offset)); // sizeof(*p_offset) == sizeof(size_t)
     if (!space) return (uintptr_t) NULL;
 
-    uintptr_t beginning = ROUNDUP(space, size);
+    const uintptr_t beginning = ROUNDUP(space, size);
     p_offset = (size_t *) (beginning - sizeof(*p_offset));
     *p_offset = beginning - space;
 
-    MemMetaData *meta = private__get_mem_metadata(space);
+    MemMetaData *meta = private__mem_get_metadata(space);
     meta->size = size;
     return beginning;
 }
@@ -177,12 +178,12 @@ uintptr_t mem_allocate(size_t size) {
  * @return 0 if success; 1 if failed
  * @link https://www.geeksforgeeks.org/buddy-memory-allocation-program-set-2-deallocation/ @endlink
  */
-int private__mem_deallocate(uintptr_t space) {
-    MemMetaData *meta = private__get_mem_metadata(space);
+int private__mem_deallocate(const uintptr_t space) {
+    MemMetaData *meta = private__mem_get_metadata(space);
     if (meta->MAGIC != MEM_METADATA_MAGIC) {
         return 1;
     }
-    uintptr_t addr = (uintptr_t) meta;
+    const uintptr_t addr = (uintptr_t) meta;
     int order = MemAllocator.registry[addr >> MemAllocator.base_order];
     if (order < MemAllocator.base_order) {
         return 1;
@@ -191,18 +192,21 @@ int private__mem_deallocate(uintptr_t space) {
 
     // coalesce
     while (order < MemAllocator.max_order) {
-        uintptr_t this_buddyAddr = (uintptr_t) meta;
-        int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
+        const uintptr_t this_buddyAddr = (uintptr_t) meta;
+        const int this_buddyNum = calculate_buddyNum(this_buddyAddr, order);
         uintptr_t buddy_buddyAddr;
-        if (this_buddyNum) { // this is right buddy (higher address) -> 1
+        if (this_buddyNum) {
+            // this is right buddy (higher address) -> 1
             buddy_buddyAddr = this_buddyAddr - (1 << order);
-        } else {// this is left buddy (lower address) -> 0
+        } else {
+            // this is left buddy (lower address) -> 0
             buddy_buddyAddr = this_buddyAddr + (1 << order);
         }
 
         MemMetaData *buddyMeta = util_list_retrieve_with_metaAddr(order - MemAllocator.base_order, buddy_buddyAddr);
         if (!buddyMeta) break;
-        if (this_buddyNum) { // right
+        if (this_buddyNum) {
+            // right
             meta = buddyMeta;
         }
         order++;
@@ -218,9 +222,9 @@ int private__mem_deallocate(uintptr_t space) {
  * beginning of actual storage rather than metadata or space.
  * @return 0 if success; 1 if failed
  */
-int mem_deallocate(uintptr_t beginning) {
-    size_t *p_offset = (size_t *) (beginning - sizeof(size_t));
-    uintptr_t space = (uintptr_t) (beginning - *p_offset);
+int mem_deallocate(const uintptr_t beginning) {
+    const size_t *p_offset = (size_t *) (beginning - sizeof(size_t));
+    const uintptr_t space = beginning - *p_offset;
     return private__mem_deallocate(space);
 }
 
@@ -231,52 +235,54 @@ int mem_deallocate(uintptr_t beginning) {
  * <p>
  * Every time, this function is invoked, it first requests memory from the global
  * memory allocator which delivers a fit space. After setting up some attributes
- * of `struct slab_metadata`, it calculates how many bitmap is suitable.
+ * of `struct slab_metadata`, it calculates how many bitmaps are suitable.
  * some useful equations are listed below:
  * - groups = number of bitmaps
  * - members per group = sizeof(bitmap) * 8
  * - capacity = (member per group) * groups
  * because bitmaps and cells share common space with each other, they must obey the rule:
  * - capacity <= number of cells.
- * This is because one group that bitmap represents is integrated and non-splittable.
+ * This is because one group representing a bitmap is integrated and non-splittable.
  * This may entail some waste, but for convenience, such approach is tolerable.
  * Besides, in calculation, address alignment should always bear in mind.
  * <p>
  * What's more, if status is `init`, place the new metadata at the front of 'deque';
  * else if status is `reusable`, place it at the rear.
- * The reason for this is that those reusable spaces can be retrieved back to
- * the global memory allocator, while initial space is fixed.
+ * The reason for this is that every time search available space from initial pages
+ * to reusable pages, rather than randomly pick up one.
  *
- * @param size the total size request from `MemAllocator`
+ * @param size the total size requesting `MemAllocator`
  * @note size must be multiple times of PAGE_SIZE.
  * @return the pointer to newMeta, if succeed; else, NULL.
  */
-SlabMetaData *slab_request_mem(SlabMetaData *sentinel, Status status, const size_t size) {
+SlabMetaData *slab_request_mem(SlabMetaData *sentinel, const Status status, const size_t size) {
     SlabMetaData *newMeta = (SlabMetaData *) mem_allocate(size);
-    if (!newMeta) { // newMeta is NULL
+    if (!newMeta) {
+        // newMeta is NULL
         return NULL;
     }
     newMeta->status = status;
     newMeta->typeSize = sentinel->typeSize;
+    newMeta->MAGIC = SLAB_METADATA_MAGIC;
 
     uintptr_t start = (uintptr_t) (newMeta + sizeof(SlabMetaData));
     start = ROUNDUP(start, sizeof(bitmap));
     newMeta->p_bitmap = (bitmap *) start;
 
     const uintptr_t end = (uintptr_t) (newMeta + size);
-    int max_cell_num = (int) ((end - start) / newMeta->typeSize);
+    const int max_cell_num = (int) ((end - start) / newMeta->typeSize);
     // dynamically partition bitmaps and cells.
     int groups = 1;
     for (int i = max_cell_num; i > 0; --i) {
-        uintptr_t space = end - i * newMeta->typeSize; // the beginning of cell
+        const uintptr_t space = end - i * newMeta->typeSize; // the beginning of cell
         groups = (int) ((space - start) / sizeof(bitmap));
-        int capacity = groups * (int) (sizeof(bitmap) * 8);
+        const int capacity = groups * (int) (sizeof(bitmap) * 8);
 
         if (capacity > i) break;
     }
     // if newMeta->groups == 0, it means this slab is invalid
-    newMeta->groups = groups - 1;   // guarantee capacity <= number of cells
-    newMeta->remaining = newMeta->groups * (sizeof(bitmap) * 8);
+    newMeta->groups = groups - 1; // guarantee capacity <= number of cells
+    newMeta->remaining = (int) (newMeta->groups * (sizeof(bitmap) * 8));
     newMeta->offset = (end - newMeta->remaining * newMeta->typeSize) - (uintptr_t) newMeta;
     // initialize bitmaps
     for (int i = 0; i < newMeta->groups; ++i) {
@@ -306,11 +312,12 @@ SlabMetaData *slab_request_mem(SlabMetaData *sentinel, Status status, const size
  * slabs of each type. It then allocates initial memory blocks for these slabs
  * from the global memory allocator, setting the stage for efficient memory management.
  */
-void private__init_slab_meta_data(SlabMetaData *metaData, int typeIndex) {
+void private__init_slab_meta_data(SlabMetaData *metaData, const int typeIndex) {
     // create sentinel first
     metaData->next = metaData->prev = metaData;
     metaData->status = SENTINEL;
     metaData->typeSize = SLAB_CATEGORY[typeIndex];
+    metaData->MAGIC = SLAB_METADATA_MAGIC;
 
     for (int i = 0; i < SLAB_INIT_TURNS[typeIndex]; ++i) {
         slab_request_mem(metaData, INITIAL,
@@ -326,7 +333,7 @@ void private__init_slab_meta_data(SlabMetaData *metaData, int typeIndex) {
  * @param addr The memory address where the slab manager is to be initialized.
  * @pre This address is expected to be properly aligned and allocated.
  */
-void private__init_slab_manager(uintptr_t addr) {
+void private__init_slab_manager(const uintptr_t addr) {
     struct slab_manager *manager = (struct slab_manager *) addr;
     for (int i = 0; i < SLAB_TYPES; ++i) {
         private__init_slab_meta_data(&manager->slabMetaDatas[i], i);
@@ -353,21 +360,20 @@ void private__init_slab_managers(uintptr_t *p_startAddr) {
 
 /**
  * @brief **private** function call of slab allocation in aid of the dedicated slab manager.
- * @return addr of allocated space either by using the current slab storage or request from
- * MemAllocator; NULL if not available in current slab storage AND MemAllocator denies the
- * request.
+ * @return addr of allocated space either by using the current slab storage or requested
+ * from MemAllocator; NULL if not available in current slab storage AND MemAllocator denies
+ * the request.
  */
 uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
     SlabMetaData *p = sentinel->next;
     while (p != sentinel) {
-        if (p->remaining) {
+        if (p->remaining > 0) {
             for (int g = 0; g < p->groups; ++g) {
                 if (!util_bitmap_has_space(p->p_bitmap[g]))continue;
 
-                int pos = util_bitmap_get_available_pos(p->p_bitmap[g]);
+                const int pos = util_bitmap_get_available_pos(p->p_bitmap[g]);
                 util_bitmap_flip_pos(&p->p_bitmap[g], pos);
                 p->remaining--;
-
                 return (uintptr_t) p + p->offset +
                        (g * (sizeof(bitmap) * 8) + pos) * p->typeSize;
             }
@@ -376,7 +382,8 @@ uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
     }
     // no available space in current list of slabs, request a page once.
     SlabMetaData *newMeta = slab_request_mem(sentinel, REUSABLE, PAGE_SIZE);
-    if (!newMeta) {  // newMeta is NULL
+    if (!newMeta) {
+        // newMeta is NULL
         return (uintptr_t) NULL;
     }
     newMeta->remaining--;
@@ -386,12 +393,27 @@ uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
 
 /**
  * @brief **public** function call of slab allocation in aid of the dedicated slab manager.
+ * @param manager
  * @param typeIndex which type needs.
  * @return same as `__slab_allocate`.
  * @see private__slab_allocate for more details.
  */
-uintptr_t slab_allocate(struct slab_manager *manager, int typeIndex) {
+uintptr_t slab_allocate(struct slab_manager *manager, const int typeIndex) {
+    // todo lock
     return private__slab_allocate(&manager->slabMetaDatas[typeIndex]);
+}
+
+/**
+ * @return the index of fit(the first greater than or equal) slab size in `SLAB_CATEGORY`,
+ * if find; else -1.
+ */
+int slab_get_typeIndex(const size_t size) {
+    for (int i = 0; i < SLAB_TYPES; ++i) {
+        if (SLAB_CATEGORY[i] >= size) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static void *kalloc(size_t size) {
@@ -399,11 +421,13 @@ static void *kalloc(size_t size) {
         return NULL;
     }
     void *ret = NULL;
-    int typeIndex = get_slab_typeIndex(size);
-    if (typeIndex) {// suitable for slab
-        int cpu = cpu_current();
+    const int typeIndex = slab_get_typeIndex(size);
+    if (typeIndex) {
+        // suitable for slab
+        const int cpu = cpu_current();
         ret = (void *) slab_allocate(&SlabManagers[cpu], typeIndex);
-    } else {// too big for slab
+    } else {
+        // too big for slab
         /* adjust the size to bigger or equal to PAGE_SIZE to fit in with `mem_allocate`.
          Admittedly, this is a kind of waste if SLAB_CATEGORY[-1] < size < PAGE_SIZE */
         size = size >= PAGE_SIZE ? size : PAGE_SIZE;
@@ -412,9 +436,97 @@ static void *kalloc(size_t size) {
     return ret;
 }
 
+/**
+ * work around
+ * a little tricky
+ * @param addr
+ * @return
+ */
+SlabMetaData *private__slab_get_metaData(const uintptr_t addr) {
+    SlabMetaData *meta = (SlabMetaData *) ROUNDDOWN(addr, PAGE_SIZE);
+    if (meta->MAGIC == SLAB_METADATA_MAGIC) {
+        return meta;
+    }
+    for (int i = 0; i < SLAB_TYPES; ++i) {
+        meta = (SlabMetaData *) ROUNDDOWN(addr, PAGE_SIZE * SLAB_INIT_PAGES_PER_TURN[i]);
+        if (meta->MAGIC == SLAB_METADATA_MAGIC) return meta;
+    }
+    return NULL;
+}
+
+static int util_bitmap_test(const bitmap b, const int pos) {
+    return b & (1 << pos);
+}
+
+static int private__slab_isEmpty(const SlabMetaData *metaData) {
+    return metaData->remaining == (metaData->groups * (sizeof(bitmap) * 8));
+}
+
+/**
+ * @brief return space to the global memory allocator.
+ */
+void slab_return_mem(SlabMetaData *metaData) {
+    if (metaData->status != REUSABLE) return;
+
+    SlabMetaData *p = metaData->prev;
+    SlabMetaData *n = metaData->next;
+    p->next = n;
+    n->prev = p;
+    mem_deallocate((uintptr_t) metaData);
+}
+
+int slab_deallocate(SlabMetaData *meta, const uintptr_t targetAddr) {
+    if (meta->MAGIC != SLAB_METADATA_MAGIC) return 1;
+
+    const int typeIndex = slab_get_typeIndex(meta->typeSize);
+    if (typeIndex < 0 || meta->typeSize != SLAB_CATEGORY[typeIndex]) {
+        // not the exact size
+        return 1;
+    }
+    if (targetAddr % meta->typeSize) {
+        // not aligned
+        return 1;
+    }
+    if (meta->groups <= 0) return 1;
+
+    // todo lock
+    const size_t distance = targetAddr - ((uintptr_t) meta + meta->offset);
+    const int num =  distance / meta->typeSize;
+    const int g =  num / (sizeof(bitmap) * 8);
+    if (g < 0 || g >= meta->groups) return 1;
+
+    const int pos =  num % (sizeof(bitmap) * 8);
+    if (pos < 0 || pos >= sizeof(bitmap) * 8) return 1;
+
+    if (!util_bitmap_test(meta->p_bitmap[g], pos)) {
+        // the target bit is 0
+        return 1;
+    }
+    util_bitmap_flip_pos(&meta->p_bitmap[g], pos);
+    meta->remaining++;
+    if (private__slab_isEmpty(meta)) {
+        slab_return_mem(meta);
+    }
+    return 0;
+}
+
+/**
+ * different from allocation, as one cpu may allocate a space and then another cpu frees this.
+ * @param ptr
+ *
+ * 其实还想要加一个iterator 来保证所有的的类型都检查到。
+ */
 static void kfree(void *ptr) {
-    // TODO
-    // You can add more .c files to the repo.
+    const uintptr_t addr = (uintptr_t) ptr;
+    SlabMetaData *possible_slab_meta = private__slab_get_metaData(addr);
+    int ret = 1;
+    if (possible_slab_meta) {
+        // this space is likely within slab
+        ret = slab_deallocate(possible_slab_meta, addr);
+    }
+    if (ret) {
+        mem_deallocate(addr);
+    }
 }
 
 static void pmm_init() {
@@ -429,9 +541,9 @@ static void pmm_init() {
 }
 
 MODULE_DEF(pmm) = {
-        .init = pmm_init,
-        .alloc = kalloc,
-        .free = kfree,
+    .init = pmm_init,
+    .alloc = kalloc,
+    .free = kfree,
 };
 
 /***** utility function ************/
@@ -439,7 +551,7 @@ MODULE_DEF(pmm) = {
  * this function is designed for 'memory allocator', which calculates the order of power of 2 size.
  * And 2^order is less than or equal to the given size.
  */
-static inline int get_order(size_t size) {
+static int get_order(const size_t size) {
     // counting leading zeros;
     return ((int) sizeof(size_t) * 8 - 1) - __builtin_clz(size);
 }
@@ -452,7 +564,7 @@ static inline int get_order(size_t size) {
  * @return size_t The nearest power of 2 that is greater than or equal to the
  * given size.
  */
-static inline size_t align_size(size_t size) {
+static size_t align_size(size_t size) {
     if (size == 0)
         return 1;
     if ((size & (size - 1)) == 0) // power of 2
@@ -480,29 +592,18 @@ static inline size_t align_size(size_t size) {
  * @param order The order used to calculate the buddy number.
  * @return 0 -> left buddy; 1 -> right buddy.
  */
-static inline int calculate_buddyNum(uintptr_t addr, int order) {
+static int calculate_buddyNum(const uintptr_t addr, const int order) {
     return (int) (addr >> order) % 2;
 }
 
-/**
- * @return the index of fit(the first greater than or equal) slab size in `SLAB_CATEGORY`,
- * if find; else -1.
- */
-int get_slab_typeIndex(size_t size) {
-    for (int i = 0; i < SLAB_TYPES; ++i) {
-        if (SLAB_CATEGORY[i] >= size) {
-            return i;
-        }
-    }
-    return -1;
-}
 
 /**
  * @brief designed for adding metadata to "MemAllocator's" free_list
  * @param index the target index of free_list
+ * @param target
  * @warning index is different from order for MemAllocator.
  */
-static void util_list_addFirst(int index, MemMetaData *target) {
+static void util_list_addFirst(const int index, MemMetaData *target) {
     MemMetaData *nextMeta = MemAllocator.free_list[index]->next;
     MemAllocator.free_list[index] = target;
     target->next = nextMeta;
@@ -516,7 +617,7 @@ static void util_list_addFirst(int index, MemMetaData *target) {
  * not
  * @return address of first element
  */
-static MemMetaData *util_list_removeFirst(int index) {
+static MemMetaData *util_list_removeFirst(const int index) {
     // assert(MemAllocator.free_list[index]);
     MemMetaData *meta = MemAllocator.free_list[index];
     MemMetaData *nextMeta = meta->next;
@@ -535,7 +636,7 @@ static MemMetaData *util_list_removeFirst(int index) {
  * @warning index is different from order for MemAllocator.
  * @return NULL, if not found; else the same address as `target_metaAddr`.
  */
-static MemMetaData *util_list_retrieve_with_metaAddr(int index, uintptr_t target_metaAddr) {
+static MemMetaData *util_list_retrieve_with_metaAddr(const int index, const uintptr_t target_metaAddr) {
     if (!MemAllocator.free_list[index])return NULL; // no element
     if ((uintptr_t) MemAllocator.free_list[index] == target_metaAddr) {
         // the first element is target metadata
@@ -554,7 +655,7 @@ static MemMetaData *util_list_retrieve_with_metaAddr(int index, uintptr_t target
     return targetMeta;
 }
 
-static inline int util_bitmap_has_space(bitmap b) {
+static int util_bitmap_has_space(const bitmap b) {
     return (~b) ? 1 : 0;
 }
 
@@ -564,7 +665,7 @@ static inline int util_bitmap_has_space(bitmap b) {
  * @pre if `_bitmap_has_space(b)` is true, then this function can be called.
  * Otherwise, it is forbidden.
  */
-static inline int util_bitmap_get_available_pos(bitmap b) {
+static int util_bitmap_get_available_pos(const bitmap b) {
     // count trailing zeros
     return __builtin_ctz(~b);
 }
@@ -572,8 +673,9 @@ static inline int util_bitmap_get_available_pos(bitmap b) {
 /**
  * This function toggles the bit at the given position, changing it from 0 to 1
  * or from 1 to 0.
+ * @param p_bitmap
  * @param pos the index of to be flipped bit.
  */
-static inline void util_bitmap_flip_pos(bitmap *p_bitmap, int pos) {
+static void util_bitmap_flip_pos(bitmap *p_bitmap, const int pos) {
     *p_bitmap ^= (1 << pos);
 }
