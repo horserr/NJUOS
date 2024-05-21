@@ -5,7 +5,7 @@
 #endif
 // todo check this(every) function's return cases.
 
-const size_t PAGE_SIZE = 4 << 10; // 4 KB     2^12
+const size_t PAGE_SIZE = 8 << 10; // 8 KB     2^13
 const size_t MAX_REQUEST_MEM = 16 << 20; // 16 MB   2^24
 const int MEM_METADATA_MAGIC = 0x01010101;
 const int SLAB_METADATA_MAGIC = 0x10101010;
@@ -71,7 +71,7 @@ MemMetaData *private__init_mem_metadata(const uintptr_t addr) {
  */
 static void init_mem_allocator(uintptr_t startAddr, uintptr_t endAddr) {
     lock_init(&MemAllocator.lock);
-    MemAllocator.base_order = 12;
+    MemAllocator.base_order = 13;
 
     // truncate or align address to 'page size'
     endAddr = ROUNDDOWN(endAddr, PAGE_SIZE);
@@ -141,8 +141,7 @@ static uintptr_t private__mem_allocate(size_t size) {
  * @brief **public** function call of memory allocation in aid of MemAllocator.
  * Middle layer between slab and actual 'memory allocator'
  * @param size the net size, not includes the metadata that controls the following space.
- * @warning the parameter should be greater than the maximum size of slab which is
- * 4096, in other words, the requested size should be greater than or equal to a page size.
+ * @warning the parameter should be greater than the maximum size of slab which is PAGE_SIZE
  * @return the address of requested space;
  * @return return NULL, if there isn't available space anymore.
  * @see the physical storage model in "common.h"

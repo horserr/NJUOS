@@ -76,11 +76,11 @@ struct memory_allocator {
     int max_order;
     /*  index <- order of size - base_order. (all sizes are power of two).
         free_list[index] -> address */
-    MemMetaData *free_list[1 + 32 - 12]; // an array of pointer to MemMetaData.
+    MemMetaData *free_list[1 + 32 - 13]; // an array of pointer to MemMetaData.
 
     // index <- (page's address >> base_order)
     // mp[index] -> actual order and actual order is valid if `actual order` >= `base_order`
-    int registry[1 << 20]; // registry
+    uint8_t registry[1 << 19]; // registry
 };
 
 /***** SLAB ALLOCATION *************/
