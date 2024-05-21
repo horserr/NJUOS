@@ -4,6 +4,15 @@
 #include <common.h>
 #endif
 // todo check this(every) function's return cases.
+
+const size_t PAGE_SIZE = 4 << 10; // 4 KB     2^12
+const size_t MAX_REQUEST_MEM = 16 << 20; // 16 MB   2^24
+const int MEM_METADATA_MAGIC = 0x01010101;
+const int SLAB_METADATA_MAGIC = 0x10101010;
+const int SLAB_CATEGORY[SLAB_TYPES] = {8, 16, 32, 64, 128};
+const int SLAB_INIT_PAGES_PER_TURN[SLAB_TYPES] = {5, 8, 5, 4, 3};
+const int SLAB_INIT_TURNS[SLAB_TYPES] = {1, 1, 3, 3, 4};
+
 static struct memory_allocator MemAllocator;
 struct slab_manager *SlabManagers; // the pointer to an array of slab managers
 
@@ -61,6 +70,7 @@ MemMetaData *private__init_mem_metadata(const uintptr_t addr) {
  * @note parameters of this function may not be aligned
  */
 static void init_mem_allocator(uintptr_t startAddr, uintptr_t endAddr) {
+    lock_init(&MemAllocator.lock);
     MemAllocator.base_order = 12;
 
     // truncate or align address to 'page size'
@@ -140,13 +150,18 @@ static uintptr_t private__mem_allocate(size_t size) {
 uintptr_t mem_allocate(size_t size) {
     size = align_size(size);
     size_t *p_offset = NULL; // pointer to the offset.
+    lock_acquire(&MemAllocator.lock);
     const uintptr_t space = private__mem_allocate(size + sizeof(MemMetaData) + sizeof(size_t));
-    if (!space) return (uintptr_t) NULL;
+    if (!space) {
+        lock_release(&MemAllocator.lock);
+        return (uintptr_t) NULL;
+    }
 
     const uintptr_t beginning = ROUNDUP(space, size); // align address.
     // todo explain the potential error.
     p_offset = (size_t *) (beginning - sizeof(size_t));
     *p_offset = beginning - space;
+    lock_release(&MemAllocator.lock);
     return beginning;
 }
 
@@ -206,7 +221,10 @@ int private__mem_deallocate(const uintptr_t space) {
 int mem_deallocate(const uintptr_t beginning) {
     const size_t *p_offset = (size_t *) (beginning - sizeof(size_t));
     const uintptr_t space = beginning - *p_offset;
-    return private__mem_deallocate(space);
+    lock_acquire(&MemAllocator.lock);
+    const int ret = private__mem_deallocate(space);
+    lock_release(&MemAllocator.lock);
+    return ret;
 }
 
 /**
@@ -309,17 +327,17 @@ void private__init_slab_meta_data(SlabMetaData *sentinel, const int typeIndex) {
  */
 void private__init_slab_manager(const uintptr_t addr) {
     struct slab_manager *manager = (struct slab_manager *) addr;
+    lock_init(&manager->lock);
     for (int i = 0; i < SLAB_TYPES; ++i) {
-        private__init_slab_meta_data(&manager->slabMetaDatas[i], i);
+        private__init_slab_meta_data(&manager->sentinels[i], i);
     }
-    // todo init lock
 }
 
 /**
  * @brief initialize an array of slab_managers, aka. `SlabManagers`.
  *
  * this function directly occupies physical memory to make room for each SlabManager.
- * @param p_startAddr the pointer to the start address
+ * @param p_startAddr a pointer to the start address
  * @note the start address of the available space is changed after this function call.
  */
 void init_slab_managers(uintptr_t *p_startAddr) {
@@ -372,8 +390,10 @@ uintptr_t private__slab_allocate(SlabMetaData *sentinel) {
  * @see private__slab_allocate for more details.
  */
 uintptr_t slab_allocate(struct slab_manager *manager, const int typeIndex) {
-    // todo lock
-    return private__slab_allocate(&manager->slabMetaDatas[typeIndex]);
+    lock_acquire(&manager->lock);
+    const int ret = private__slab_allocate(&manager->sentinels[typeIndex]);
+    lock_release(&manager->lock);
+    return ret;
 }
 
 static void *kalloc(size_t size) {
@@ -437,6 +457,10 @@ void slab_return_mem(SlabMetaData *metaData) {
     mem_deallocate((uintptr_t) metaData);
 }
 
+static struct slab_manager *private__slab_get_manager_with_sentinel(SlabMetaData *sentinel) {
+    return (struct slab_manager *) ROUNDDOWN((uintptr_t)sentinel, sizeof(struct slab_manager));
+}
+
 /**
  * @brief **public** function call of slab deallocate.
  * This function first exercises sanity check and then clears the bit as well as reduces
@@ -445,7 +469,7 @@ void slab_return_mem(SlabMetaData *metaData) {
  * @return 0 if succeed; 1 failed.
  */
 int slab_deallocate(SlabMetaData *meta, const uintptr_t targetAddr) {
-    if (meta->MAGIC != SLAB_METADATA_MAGIC) return 1;
+    if (meta->MAGIC != SLAB_METADATA_MAGIC || meta->status == SENTINEL) return 1;
 
     const int typeIndex = slab_get_typeIndex(meta->typeSize);
     if (typeIndex < 0 || meta->typeSize != SLAB_CATEGORY[typeIndex]) {
@@ -458,7 +482,6 @@ int slab_deallocate(SlabMetaData *meta, const uintptr_t targetAddr) {
     }
     if (meta->groups <= 0) return 1;
 
-    // todo lock
     const size_t distance = targetAddr - ((uintptr_t) meta + meta->offset);
     const int num = distance / meta->typeSize;
     const int g = num / (sizeof(bitmap) * 8);
@@ -471,11 +494,19 @@ int slab_deallocate(SlabMetaData *meta, const uintptr_t targetAddr) {
         // the target bit is 0
         return 1;
     }
+
+    SlabMetaData *sentinel = meta;
+    while (sentinel->status != SENTINEL) {
+        sentinel = sentinel->next;
+    }
+    struct slab_manager *manager = private__slab_get_manager_with_sentinel(sentinel);
+    lock_acquire(&manager->lock);
     util_bitmap_flip_pos(&meta->p_bitmap[g], pos);
     meta->remaining++;
     if (slab_isEmpty(meta)) {
         slab_return_mem(meta);
     }
+    lock_release(&manager->lock);
     return 0;
 }
 

@@ -10,25 +10,37 @@
 #include <klib.h>
 #endif
 
-const size_t PAGE_SIZE = 4 << 10; // 4 KB     2^12
-const size_t MAX_REQUEST_MEM = 16 << 20; // 16 MB   2^24
-const int MEM_METADATA_MAGIC = 0x01010101;
-const int SLAB_METADATA_MAGIC = 0x10101010;
+extern const size_t PAGE_SIZE;
+extern const size_t MAX_REQUEST_MEM;
+extern const int MEM_METADATA_MAGIC;
+extern const int SLAB_METADATA_MAGIC;
 
 #define SLAB_TYPES 5
 // todo explain why remove 256
 //  hint: 4096 / 256 = 16 = sizeof(bitmap)
 // todo explain why slab has to be these sizes
 // hint: for alignment
-const int SLAB_CATEGORY[] = {8, 16, 32, 64, 128};
-const int SLAB_INIT_PAGES_PER_TURN[] = {5, 8, 5, 4, 3};
+extern const int SLAB_CATEGORY[SLAB_TYPES];
+extern const int SLAB_INIT_PAGES_PER_TURN[SLAB_TYPES];
 // todo explain why
-const int SLAB_INIT_TURNS[] = {1, 1, 3, 3, 4};
+extern const int SLAB_INIT_TURNS[SLAB_TYPES];
 //int SLAB_TOTAL_PAGES[] = {5, 8, 15, 12, 12};
 // SLAB_TOTAL_PAGES[i] = SLAB_INIT_PAGES_PER_TURN[i] * SLAB_INIT_TURNS[i];
 
 typedef int SpinLock;
-// inline function
+
+inline void lock_init(SpinLock *lock) {
+    atomic_xchg(lock, 0);
+}
+
+inline void lock_acquire(SpinLock *lock) {
+    while (atomic_xchg(lock, 1));
+}
+
+inline void lock_release(SpinLock *lock) {
+    atomic_xchg(lock, 0);
+}
+
 /***** BUDDY ALLOCATION ***********/
 /**
  * physical memory partition model.
@@ -36,7 +48,7 @@ typedef int SpinLock;
  *     addr     space              beginning    addr
  *     ***************************************************
  *     *  meta 1*          |offset| space 1     *  meta 2*
- *     *  data  *          |(int) |             *  data  *
+ *     *  data  *          |      |             *  data  *
  *     ***************************************************
  *     +----------------------------------------+
  *
@@ -59,6 +71,7 @@ typedef struct mem_metadata {
  * sizes, which means that the size of metadata should be accounted for.
  */
 struct memory_allocator {
+    SpinLock lock;
     int base_order; // the order of 'page size'
     int max_order;
     /*  index <- order of size - base_order. (all sizes are power of two).
@@ -103,7 +116,7 @@ typedef struct slab_metadata {
 /***** slab manager ****************/
 // every cpu has a single slab_manager
 struct slab_manager {
-    //    SpinLock lock;
-    SlabMetaData slabMetaDatas[SLAB_TYPES]; // regard slab as node in singly linked list,
+    SpinLock lock;
+    SlabMetaData sentinels[SLAB_TYPES]; // regard slab as node in singly linked list,
     // this line of code servers as an array of sentinel node for each slab type.
 };
